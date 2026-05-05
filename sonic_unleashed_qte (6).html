@@ -1,0 +1,524 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Sonic Unleashed — QTE Time-Bar Prototype</title>
+<style>
+  :root{--bg:#081428;--panel:#0f1724;--text:#dbe7ff;--muted:#9fb4d9}
+  html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;background:var(--bg);color:var(--text)}
+  .wrap{width:980px;max-width:96vw;margin:28px auto;padding:18px;border-radius:12px}
+  canvas{width:100%;height:560px;border-radius:12px;background:linear-gradient(180deg,#05203a 0%, #071827 100%);display:block}
+  .controls{display:flex;gap:12px;align-items:center;margin-top:10px;flex-wrap:wrap}
+  .hint{color:var(--muted);font-size:13px}
+  button,select{background:#0b273a;border:1px solid rgba(255,255,255,0.08);color:var(--text);padding:8px 10px;border-radius:8px;cursor:pointer}
+  label{font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h2 style="margin:6px 0 12px 0">Sonic Unleashed — QTE Time-Bar Prototype</h2>
+  <canvas id="game" width="980" height="560"></canvas>
+  <div class="controls">
+    <div class="hint">Controller support: Chrome/Edge on localhost or HTTPS. Layout is selectable.</div>
+    <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+      <label for="layoutSelect">Layout</label>
+      <select id="layoutSelect">
+        <option value="ps3">PS3</option>
+        <option value="xbox360" selected>Xbox 360</option>
+      </select>
+      <button id="restart">Restart</button>
+    </div>
+  </div>
+</div>
+<script>
+/*
+  QTE prototype with a real layout abstraction.
+  Gameplay uses neutral logical buttons: FACE_BOTTOM, FACE_RIGHT, FACE_LEFT, FACE_TOP, SHOULDER_LEFT, SHOULDER_RIGHT.
+  Layouts decide what those buttons look like and how raw gamepad indexes are interpreted.
+*/
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let DPR = Math.max(1, window.devicePixelRatio || 1);
+function setupCanvas(){
+  DPR = Math.max(1, window.devicePixelRatio || 1);
+  canvas.width = canvas.clientWidth * DPR;
+  canvas.height = canvas.clientHeight * DPR;
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+setupCanvas();
+
+const LOGICAL_BUTTONS = [
+  'SHOULDER_RIGHT',
+  'SHOULDER_LEFT',
+  'FACE_BOTTOM',
+  'FACE_RIGHT',
+  'FACE_LEFT',
+  'FACE_TOP'
+];
+
+const LAYOUTS = {
+  ps3: {
+    name: 'PS3',
+    // Standard browser mapping: 0 bottom, 1 right, 2 left, 3 top, 4 L1, 5 R1
+    gamepadMap: {
+      0:'FACE_BOTTOM',
+      1:'FACE_RIGHT',
+      2:'FACE_LEFT',
+      3:'FACE_TOP',
+      4:'SHOULDER_LEFT',
+      5:'SHOULDER_RIGHT'
+    },
+    keyboardMap: {
+      'k':'FACE_BOTTOM',
+      'l':'FACE_RIGHT',
+      'u':'FACE_LEFT',
+      'i':'FACE_TOP',
+      'h':'SHOULDER_LEFT',
+      'j':'SHOULDER_RIGHT'
+    },
+    buttons: {
+      FACE_BOTTOM:   {label:'X',  color:'#2d7ef6', kind:'face'},
+      FACE_RIGHT:    {label:'O',  color:'#e64545', kind:'face', scale:1.22},
+      FACE_LEFT:     {label:'□',  color:'#ff4fd8', kind:'face', scale:1.75, offsetY:-1.5},
+      FACE_TOP:      {label:'△',  color:'#29cc5f', kind:'face', scale:1.08},
+      SHOULDER_LEFT: {label:'L1', color:'#ffffff', kind:'shoulder'},
+      SHOULDER_RIGHT:{label:'R1', color:'#ffffff', kind:'shoulder'}
+    }
+  },
+  xbox360: {
+    name: 'Xbox 360',
+    // Standard browser mapping: 0 A, 1 B, 2 X, 3 Y, 4 LB, 5 RB
+    gamepadMap: {
+      0:'FACE_BOTTOM',
+      1:'FACE_RIGHT',
+      2:'FACE_LEFT',
+      3:'FACE_TOP',
+      4:'SHOULDER_LEFT',
+      5:'SHOULDER_RIGHT'
+    },
+    keyboardMap: {
+      'k':'FACE_BOTTOM',
+      'l':'FACE_RIGHT',
+      'u':'FACE_LEFT',
+      'i':'FACE_TOP',
+      'h':'SHOULDER_LEFT',
+      'j':'SHOULDER_RIGHT'
+    },
+    buttons: {
+      FACE_BOTTOM:   {label:'A',  color:'#29cc5f', kind:'face', fillColor:'#29cc5f', symbolColor:'#ffffff'},
+      FACE_RIGHT:    {label:'B',  color:'#e64545', kind:'face', fillColor:'#e64545', symbolColor:'#ffffff'},
+      FACE_LEFT:     {label:'X',  color:'#2d7ef6', kind:'face', fillColor:'#2d7ef6', symbolColor:'#ffffff'},
+      FACE_TOP:      {label:'Y',  color:'#ffd34d', kind:'face', fillColor:'#ffd34d', symbolColor:'#ffffff'},
+      SHOULDER_LEFT: {label:'LB', color:'#ffffff', kind:'shoulder'},
+      SHOULDER_RIGHT:{label:'RB', color:'#ffffff', kind:'shoulder'}
+    }
+  }
+};
+
+let currentLayoutKey = 'xbox360';
+let currentLayout = LAYOUTS[currentLayoutKey];
+
+function getButtonVisual(logicalButton){
+  return currentLayout.buttons[logicalButton] || {label:'?', color:'#bbb', kind:'face'};
+}
+
+let running = true;
+let score = 0;
+let level = 1;
+let sequence = [];
+let seqType = 'normal';
+let inputPos = 0;
+let timeLimit = 2200;
+let timer = timeLimit;
+let gamepadIndex = null;
+let lastGPState = {};
+
+function rand(max){return Math.floor(Math.random()*max)}
+const PROMPT_BUTTONS_SINGLE = ['FACE_BOTTOM','FACE_RIGHT','FACE_LEFT','FACE_TOP'];
+const PROMPT_BUTTONS_MULTI = ['FACE_BOTTOM','FACE_RIGHT','FACE_LEFT','FACE_TOP','SHOULDER_LEFT','SHOULDER_RIGHT'];
+function pickButton(mode='single'){
+  const pool = mode === 'multi' ? PROMPT_BUTTONS_MULTI : PROMPT_BUTTONS_SINGLE;
+  return pool[rand(pool.length)];
+}
+
+function generateSequence(){
+  const roll = Math.random();
+
+  // Single-button QTEs: face buttons only. Sometimes tap, sometimes mash.
+  if(roll < 0.35){
+    const isMash = Math.random() < Math.min(0.25 + level * 0.035, 0.65);
+    const btn = pickButton('single');
+
+    if(isMash){
+      seqType = 'mash';
+      // Scales from 5 to 60 presses. At 60 presses, the player gets 8 seconds.
+      const required = Math.min(5 + Math.floor(level * 3.2), 60);
+      const t = (required - 5) / 55;
+      timeLimit = Math.round(1400 + t * 6600);
+      sequence = [{type:'mash', logical:btn, required:required, progress:0}];
+    } else {
+      seqType = 'normal';
+      sequence = [{type:'press', logical:btn}];
+      timeLimit = Math.max(500, 1300 - level * 35);
+    }
+  } else {
+    // Multi-button QTEs: 3 to 5 buttons, face + shoulder buttons allowed.
+    seqType = 'normal';
+    const len = Math.min(3 + Math.floor(level / 3), 5);
+    sequence = [];
+    for(let i=0;i<len;i++) sequence.push({type:'press',logical:pickButton('multi')});
+    timeLimit = Math.max(700, 2100 - level*120);
+  }
+
+  inputPos = 0;
+  timer = timeLimit;
+}
+
+window.addEventListener('gamepadconnected', e=>{ gamepadIndex = e.gamepad.index; });
+window.addEventListener('gamepaddisconnected', e=>{ if(gamepadIndex===e.gamepad.index) gamepadIndex=null; });
+
+function pollGamepad(){
+  if(gamepadIndex===null) return;
+  const gp = navigator.getGamepads()[gamepadIndex];
+  if(!gp) return;
+  for(let i=0;i<gp.buttons.length;i++){
+    const logical = currentLayout.gamepadMap[i];
+    if(!logical) continue;
+    const pressed = gp.buttons[i].pressed;
+    const stateKey = currentLayoutKey + ':' + logical;
+    const prev = lastGPState[stateKey] || false;
+    if(pressed && !prev){ handleInput(logical); }
+    lastGPState[stateKey] = pressed;
+  }
+}
+
+window.addEventListener('keydown', e => {
+  const logical = currentLayout.keyboardMap[e.key];
+  if(logical) handleInput(logical);
+});
+
+function handleInput(logical){
+  if(!running) return;
+  if(seqType==='mash'){
+    const current = sequence[0];
+    if(logical === current.logical){
+      current.progress++;
+      score += 1 + Math.floor(level/4);
+      if(current.progress >= current.required){ level++; score += 50*level; generateSequence(); }
+    } else {
+      timer -= 120;
+    }
+    return;
+  }
+
+  const expected = sequence[inputPos];
+  if(!expected) return;
+  if(logical === expected.logical){
+    inputPos++;
+    score += 5 + Math.floor(level/3);
+    if(inputPos >= sequence.length){ level++; score += 40*level; generateSequence(); }
+  } else {
+    running = false;
+  }
+}
+
+function drawRoundedRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function strokeRoundedRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+  ctx.stroke();
+}
+
+function drawButton(x,y,logical,opts={filled:false,small:false}){
+  const b = getButtonVisual(logical);
+  const size = opts.small?28:44;
+  ctx.save();
+  ctx.translate(x,y);
+
+  if(b.kind==='shoulder'){
+    if(currentLayoutKey === 'xbox360'){
+      // Sonic Unleashed / Xbox 360 style: white rounded pill with grey bevel
+      const pillW = 72;
+      const pillH = 34;
+      const px = -pillW/2;
+      const py = -pillH/2;
+      const grd = ctx.createLinearGradient(0, py, 0, py + pillH);
+      grd.addColorStop(0, '#ffffff');
+      grd.addColorStop(0.55, '#e8ecec');
+      grd.addColorStop(1, '#b8c0c0');
+      ctx.fillStyle = grd;
+      drawRoundedRect(px, py, pillW, pillH, 10);
+      ctx.strokeStyle = '#1d2528';
+      ctx.lineWidth = 2.5;
+      strokeRoundedRect(px, py, pillW, pillH, 10);
+      ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+      ctx.lineWidth = 1;
+      strokeRoundedRect(px+3, py+3, pillW-6, pillH-6, 8);
+      ctx.fillStyle = '#f7f7f7';
+      ctx.font = (opts.small?'15px ':'19px ') + 'Arial Black, Arial';
+      ctx.textAlign='center';
+      ctx.textBaseline='middle';
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = '#4a5053';
+      ctx.strokeText(b.label,0,1);
+      ctx.fillText(b.label,0,1);
+    } else {
+      // PS3 shoulder button: black base, white label
+      ctx.fillStyle = '#000000';
+      ctx.strokeStyle = '#111111';
+      ctx.lineWidth = 2;
+      drawRoundedRect(-32,-18,64,36,10);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = (opts.small?'13px ':'16px ') + 'Arial';
+      ctx.textAlign='center';
+      ctx.textBaseline='middle';
+      ctx.fillText(b.label,0,0);
+    }
+  } else {
+    const fillColor = b.fillColor || '#000000';
+    const symbolColor = b.symbolColor || b.color;
+
+    if(currentLayoutKey === 'xbox360'){
+      // Sonic Unleashed / Xbox 360 style: glossy colored button with dark rim
+      const radius = size/2;
+      ctx.beginPath();
+      ctx.arc(0,0,radius,0,Math.PI*2);
+      ctx.closePath();
+      ctx.fillStyle = '#111820';
+      ctx.fill();
+
+      const outerGrad = ctx.createRadialGradient(-7,-8,3,0,0,radius);
+      outerGrad.addColorStop(0,'#ffffff');
+      outerGrad.addColorStop(0.22, fillColor);
+      outerGrad.addColorStop(0.72, fillColor);
+      outerGrad.addColorStop(1,'#1b1b1b');
+      ctx.beginPath();
+      ctx.arc(0,0,radius-2,0,Math.PI*2);
+      ctx.fillStyle = outerGrad;
+      ctx.fill();
+      ctx.strokeStyle = '#0a0d12';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(-6,-7,radius*0.42,0,Math.PI*2);
+      ctx.fillStyle = 'rgba(255,255,255,0.22)';
+      ctx.fill();
+    } else {
+      // PS3 Sonic Unleashed style: black button shell with colored symbol
+      const radius = size/2;
+      const shellGrad = ctx.createRadialGradient(-6,-7,2,0,0,radius);
+      shellGrad.addColorStop(0,'#4a4a4a');
+      shellGrad.addColorStop(0.38,'#111111');
+      shellGrad.addColorStop(1,'#000000');
+
+      ctx.beginPath();
+      ctx.arc(0,0,radius,0,Math.PI*2);
+      ctx.closePath();
+      ctx.fillStyle = shellGrad;
+      ctx.fill();
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = symbolColor;
+    ctx.font = currentLayoutKey === 'xbox360'
+      ? (opts.small?'17px ':'21px ') + 'Arial Black, Arial'
+      : (opts.small?'16px ':'20px ') + 'Arial';
+    ctx.textAlign='center';
+    ctx.textBaseline='middle';
+
+    const scale = b.scale || 1;
+    const offsetX = b.offsetX || 0;
+    const offsetY = b.offsetY || 1;
+    ctx.save();
+    ctx.scale(scale, scale);
+    if(currentLayoutKey === 'xbox360'){
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(0,0,0,0.65)';
+      ctx.strokeText(b.label, offsetX / scale, offsetY / scale);
+    }
+    ctx.fillText(b.label, offsetX / scale, offsetY / scale);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function draw(){
+  const W = canvas.clientWidth;
+  const H = canvas.clientHeight;
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle = 'rgba(255,255,255,0.02)';
+  ctx.fillRect(0,0,W,H);
+
+  ctx.fillStyle='#dbe7ff';
+  ctx.font='18px Arial';
+  ctx.textAlign='left';
+  ctx.fillText('Score: ' + score, 18, 28);
+  ctx.fillText('Level: ' + level, 18, 52);
+  ctx.fillText('Layout: ' + currentLayout.name, 18, 76);
+
+  const seqY = H*0.46;
+  const spacing = 70;
+  const isSinglePrompt = sequence.length === 1;
+  const totalSeqWidth = (sequence.length - 1) * spacing;
+  const startX = isSinglePrompt ? W / 2 : (W / 2) - (totalSeqWidth / 2);
+
+  for(let i=0;i<sequence.length;i++){
+    const s = sequence[i];
+    const x = startX + i*spacing;
+    ctx.globalAlpha = (i < inputPos)? 0.4 : 1.0;
+
+    if(s.type==='mash'){
+      drawButton(x, seqY, s.logical, {filled:false});
+      const w = 160;
+      const h=12;
+      const gx = W/2 - w/2;
+      const gy = seqY + 60;
+      ctx.fillStyle='#333';
+      ctx.fillRect(gx,gy,w,h);
+      const ratio = s.progress / s.required;
+      ctx.fillStyle = '#f1c40f';
+      ctx.fillRect(gx,gy,w*ratio,h);
+      ctx.fillStyle='#dbe7ff';
+      ctx.font='14px Arial';
+      ctx.textAlign='center';
+      ctx.fillText(s.progress + ' / ' + s.required, W/2, gy + h + 18);
+    } else {
+      drawButton(x, seqY, s.logical, {filled: i < inputPos});
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  if(sequence.length === 1){
+    // Single-button QTE: circular timer around the button instead of horizontal bar
+    const s = sequence[0];
+    const ratio = Math.max(0, timer / timeLimit);
+    const ringX = W / 2;
+    const ringY = seqY;
+    // Ring hugs the button edge instead of floating far outside it.
+    const ringRadius = 29;
+    const startAngle = -Math.PI / 2;
+    const endAngle = startAngle + Math.PI * 2 * ratio;
+
+    ctx.beginPath();
+    ctx.arc(ringX, ringY, ringRadius, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = 6;
+    ctx.stroke();
+
+    const ringGradient = ctx.createLinearGradient(ringX - ringRadius, ringY, ringX + ringRadius, ringY);
+    ringGradient.addColorStop(0,'rgb(255,215,0)');
+    ringGradient.addColorStop(1,'rgb(220,0,0)');
+    ctx.beginPath();
+    ctx.arc(ringX, ringY, ringRadius, startAngle, endAngle);
+    ctx.strokeStyle = ringGradient;
+    ctx.lineWidth = 6;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+    ctx.lineCap = 'butt';
+  } else {
+    const barW = Math.min(W*0.8, 720);
+    const barH = 18;
+    const bx = (W - barW)/2;
+    const by = H*0.6;
+    ctx.fillStyle = '#1a2b3b';
+    drawRoundedRect(bx,by,barW,barH,barH/2);
+    const ratio = Math.max(0, timer / timeLimit);
+    const grd = ctx.createLinearGradient(bx,0,bx+barW,0);
+    grd.addColorStop(0,'rgb(255,215,0)');
+    grd.addColorStop(1,'rgb(220,0,0)');
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(bx, by, barW, barH, barH/2);
+    ctx.clip();
+    ctx.fillStyle = grd;
+    ctx.fillRect(bx + barW * (1 - ratio), by, barW * ratio, barH);
+    ctx.restore();
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 2;
+    strokeRoundedRect(bx,by,barW,barH,barH/2);
+  }
+
+  ctx.fillStyle = '#9fb4d9';
+  ctx.font='13px Arial';
+  ctx.textAlign='center';
+  const hintY = sequence.length === 1 ? seqY - 62 : H*0.6 - 14;
+  if(seqType==='mash') ctx.fillText('MASH: press the shown button rapidly!', W/2, hintY);
+  else ctx.fillText('Press buttons in order before the timer empties', W/2, hintY);
+
+  if(!running){
+    ctx.fillStyle='rgba(2,6,12,0.7)';
+    ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#fff';
+    ctx.font='42px Arial';
+    ctx.textAlign='center';
+    ctx.fillText('GAME OVER', W/2, H/2 - 10);
+    ctx.font='16px Arial';
+    ctx.fillText('Press Restart to try again', W/2, H/2 + 24);
+  }
+}
+
+let last = performance.now();
+function loop(now){
+  const dt = now - last;
+  last = now;
+  if(running){
+    timer -= dt;
+    if(timer <= 0){ running = false; }
+  }
+  pollGamepad();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+function restartGame(){
+  score = 0;
+  level = 1;
+  running = true;
+  lastGPState = {};
+  generateSequence();
+}
+
+document.getElementById('restart').addEventListener('click', restartGame);
+document.getElementById('layoutSelect').addEventListener('change', e=>{
+  currentLayoutKey = e.target.value;
+  currentLayout = LAYOUTS[currentLayoutKey];
+  lastGPState = {};
+  // Preserve gameplay sequence logically; only visuals/input labels change.
+});
+
+window.addEventListener('resize', ()=>{ setupCanvas(); draw(); });
+
+generateSequence();
+requestAnimationFrame(loop);
+
+// --- Minimal sanity tests (non-invasive) ---
+(function tests(){
+  console.assert(LAYOUTS.ps3.buttons.FACE_BOTTOM.label==='X','PS3 bottom face label');
+  console.assert(LAYOUTS.ps3.buttons.FACE_LEFT.scale===1.75,'PS3 square scale preserved');
+  console.assert(LAYOUTS.xbox360.buttons.FACE_BOTTOM.label==='A','Xbox bottom face label');
+  console.assert(LAYOUTS.xbox360.buttons.SHOULDER_RIGHT.label==='RB','Xbox right shoulder label');
+  console.assert(LAYOUTS.ps3.gamepadMap[0]==='FACE_BOTTOM','Gamepad index 0 maps to logical bottom');
+})();
+</script>
+</body>
+</html>
