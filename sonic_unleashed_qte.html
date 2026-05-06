@@ -154,9 +154,14 @@ function generateSequence(){
     if(isMash){
       seqType = 'mash';
       // Scales from 5 to 60 presses. At 60 presses, the player gets 8 seconds.
-      const required = Math.min(5 + Math.floor(level * 3.2), 60);
+      // Mash events: minimum 5 presses, maximum 60 presses.
+      // At 60 presses the player receives exactly 8 seconds.
+      const required = Math.min(Math.max(5 + Math.floor(level * 3.2), 5), 60);
       const t = (required - 5) / 55;
       timeLimit = Math.round(1400 + t * 6600);
+      if(required >= 60){
+        timeLimit = 8000;
+      }
       sequence = [{type:'mash', logical:btn, required:required, progress:0}];
     } else {
       seqType = 'normal';
@@ -425,12 +430,21 @@ function draw(){
     ctx.lineWidth = 6;
     ctx.stroke();
 
-    const ringGradient = ctx.createLinearGradient(ringX - ringRadius, ringY, ringX + ringRadius, ringY);
-    ringGradient.addColorStop(0,'rgb(255,215,0)');
-    ringGradient.addColorStop(1,'rgb(220,0,0)');
+    // Single-button timer color: yellow/gold at full time, true red at the end.
+    // A linear canvas gradient around a circle looks wrong, so interpolate by time instead.
+    const redR = 220;
+    const redG = 0;
+    const redB = 0;
+    const yellowR = 255;
+    const yellowG = 215;
+    const yellowB = 0;
+    const colorR = Math.round(redR + (yellowR - redR) * ratio);
+    const colorG = Math.round(redG + (yellowG - redG) * ratio);
+    const colorB = Math.round(redB + (yellowB - redB) * ratio);
+
     ctx.beginPath();
     ctx.arc(ringX, ringY, ringRadius, startAngle, endAngle);
-    ctx.strokeStyle = ringGradient;
+    ctx.strokeStyle = `rgb(${colorR},${colorG},${colorB})`;
     ctx.lineWidth = 6;
     ctx.lineCap = 'round';
     ctx.stroke();
