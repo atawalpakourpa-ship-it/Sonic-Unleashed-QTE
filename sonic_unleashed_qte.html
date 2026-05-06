@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Sonic Unleashed — QTE Time-Bar Prototype</title>
+<title>Sonic Unleashed - QTE</title>
 <style>
   :root{--bg:#081428;--panel:#0f1724;--text:#dbe7ff;--muted:#9fb4d9}
   html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;background:var(--bg);color:var(--text)}
@@ -17,7 +17,7 @@
 </head>
 <body>
 <div class="wrap">
-  <h2 style="margin:6px 0 12px 0">Sonic Unleashed — QTE Time-Bar Prototype</h2>
+  <h2 style="margin:6px 0 12px 0">Sonic Unleashed - QTE</h2>
   <canvas id="game" width="980" height="560"></canvas>
   <div class="controls">
     <div class="hint">Controller support: Chrome/Edge on localhost or HTTPS. Layout is selectable.</div>
@@ -33,13 +33,33 @@
 </div>
 <script>
 /*
-  QTE prototype with a real layout abstraction.
-  Gameplay uses neutral logical buttons: FACE_BOTTOM, FACE_RIGHT, FACE_LEFT, FACE_TOP, SHOULDER_LEFT, SHOULDER_RIGHT.
-  Layouts decide what those buttons look like and how raw gamepad indexes are interpreted.
+  Sonic Unleashed - QTE
+  Gameplay uses neutral logical buttons:
+  FACE_BOTTOM, FACE_RIGHT, FACE_LEFT, FACE_TOP, SHOULDER_LEFT, SHOULDER_RIGHT.
+  Layouts decide visuals and raw gamepad interpretation.
 */
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
+
+// Sonic Unleashed QTE sound effects.
+// Put these WAV files next to the HTML file when running locally.
+const SFX = {
+  press: new Audio('./38_objsn_trickjump_button.wav'),
+  start: new Audio('./16_objes_QTE_icon.wav'),
+  success: new Audio('./0017_objsn_trickjump_ok.wav'),
+  fail: new Audio('./0018_objsn_trickbjump_ng.wav')
+};
+
+function playSfx(name){
+  const snd = SFX[name];
+  if(!snd) return;
+  try{
+    snd.currentTime = 0;
+    snd.play().catch(()=>{});
+  } catch(e){}
+}
+
 let DPR = Math.max(1, window.devicePixelRatio || 1);
 function setupCanvas(){
   DPR = Math.max(1, window.devicePixelRatio || 1);
@@ -58,10 +78,18 @@ const LOGICAL_BUTTONS = [
   'FACE_TOP'
 ];
 
+const PROMPT_BUTTONS_SINGLE = ['FACE_BOTTOM','FACE_RIGHT','FACE_LEFT','FACE_TOP'];
+const PROMPT_BUTTONS_MULTI = ['FACE_BOTTOM','FACE_RIGHT','FACE_LEFT','FACE_TOP','SHOULDER_LEFT','SHOULDER_RIGHT'];
+
+const MASH_TIERS = [
+  {required:3, time:3000},
+  {required:5, time:5000},
+  {required:60, time:10000}
+];
+
 const LAYOUTS = {
   ps3: {
     name: 'PS3',
-    // Standard browser mapping: 0 bottom, 1 right, 2 left, 3 top, 4 L1, 5 R1
     gamepadMap: {
       0:'FACE_BOTTOM',
       1:'FACE_RIGHT',
@@ -89,7 +117,6 @@ const LAYOUTS = {
   },
   xbox360: {
     name: 'Xbox 360',
-    // Standard browser mapping: 0 A, 1 B, 2 X, 3 Y, 4 LB, 5 RB
     gamepadMap: {
       0:'FACE_BOTTOM',
       1:'FACE_RIGHT',
@@ -130,20 +157,80 @@ let level = 1;
 let sequence = [];
 let seqType = 'normal';
 let inputPos = 0;
-let timeLimit = 2200;
+let timeLimit = 3000;
 let timer = timeLimit;
 let gamepadIndex = null;
 let lastGPState = {};
 
-function rand(max){return Math.floor(Math.random()*max)}
-const PROMPT_BUTTONS_SINGLE = ['FACE_BOTTOM','FACE_RIGHT','FACE_LEFT','FACE_TOP'];
-const PROMPT_BUTTONS_MULTI = ['FACE_BOTTOM','FACE_RIGHT','FACE_LEFT','FACE_TOP','SHOULDER_LEFT','SHOULDER_RIGHT'];
+const SAVE_KEY = 'sonic_unleashed_qte_record_v1';
+let record = loadRecord();
+if(record.layout && LAYOUTS[record.layout]){
+  currentLayoutKey = record.layout;
+  currentLayout = LAYOUTS[currentLayoutKey];
+}
+
+function loadRecord(){
+  try{
+    const raw = localStorage.getItem(SAVE_KEY);
+    if(!raw) return {score:0, level:1, date:null, layout:'xbox360'};
+    const parsed = JSON.parse(raw);
+    return {
+      score: Number(parsed.score) || 0,
+      level: Number(parsed.level) || 1,
+      date: parsed.date || null,
+      layout: LAYOUTS[parsed.layout] ? parsed.layout : 'xbox360'
+    };
+  } catch(e){
+    return {score:0, level:1, date:null, layout:'xbox360'};
+  }
+}
+
+function saveRecord(){
+  const isNewRecord = score > record.score;
+  if(isNewRecord){
+    record.score = Math.floor(score);
+    record.level = level;
+    record.date = new Date().toISOString();
+  }
+  record.layout = currentLayoutKey;
+  try{
+    localStorage.setItem(SAVE_KEY, JSON.stringify(record));
+  } catch(e){}
+}
+
+function saveLayoutPreference(){
+  record.layout = currentLayoutKey;
+  try{
+    localStorage.setItem(SAVE_KEY, JSON.stringify(record));
+  } catch(e){}
+}
+
+function formatRecordDate(date){
+  if(!date) return '—';
+  try{
+    return new Date(date).toLocaleDateString();
+  } catch(e){
+    return '—';
+  }
+}
+
+function rand(max){
+  return Math.floor(Math.random()*max);
+}
+
 function pickButton(mode='single'){
   const pool = mode === 'multi' ? PROMPT_BUTTONS_MULTI : PROMPT_BUTTONS_SINGLE;
   return pool[rand(pool.length)];
 }
 
+function getMashTierForLevel(currentLevel){
+  if(currentLevel >= 12) return MASH_TIERS[2];
+  if(currentLevel >= 4) return MASH_TIERS[1];
+  return MASH_TIERS[0];
+}
+
 function generateSequence(){
+  playSfx('start');
   const roll = Math.random();
 
   // Single-button QTEs: face buttons only. Sometimes tap, sometimes mash.
@@ -153,21 +240,9 @@ function generateSequence(){
 
     if(isMash){
       seqType = 'mash';
-      // Scales from 5 to 60 presses. At 60 presses, the player gets 8 seconds.
-      // Mash events use only three fixed tiers:
-      // 3 presses = 3s, 5 presses = 5s, 60 presses = 8s.
-      const mashTiers = [
-        {required:3, time:3000},
-        {required:5, time:5000},
-        {required:60, time:8000}
-      ];
-      let tierIndex = 0;
-      if(level >= 12) tierIndex = 2;
-      else if(level >= 4) tierIndex = 1;
-      const tier = mashTiers[tierIndex];
-      const required = tier.required;
+      const tier = getMashTierForLevel(level);
+      sequence = [{type:'mash', logical:btn, required:tier.required, progress:0}];
       timeLimit = tier.time;
-      sequence = [{type:'mash', logical:btn, required:required, progress:0}];
     } else {
       seqType = 'normal';
       sequence = [{type:'press', logical:btn}];
@@ -186,6 +261,13 @@ function generateSequence(){
   timer = timeLimit;
 }
 
+function failGame(){
+  if(!running) return;
+  playSfx('fail');
+  saveRecord();
+  running = false;
+}
+
 window.addEventListener('gamepadconnected', e=>{ gamepadIndex = e.gamepad.index; });
 window.addEventListener('gamepaddisconnected', e=>{ if(gamepadIndex===e.gamepad.index) gamepadIndex=null; });
 
@@ -194,12 +276,24 @@ function pollGamepad(){
   const gp = navigator.getGamepads()[gamepadIndex];
   if(!gp) return;
 
-  // Start / Select reset the game immediately.
+  // Select/Back toggles layout. Start resets the game.
   // Standard mapping: 8 = Select/Back, 9 = Start.
-  if((gp.buttons[8] && gp.buttons[8].pressed) || (gp.buttons[9] && gp.buttons[9].pressed)){
-    restartGame();
-    return;
+  const selectPressed = Boolean(gp.buttons[8] && gp.buttons[8].pressed);
+  const startPressed = Boolean(gp.buttons[9] && gp.buttons[9].pressed);
+  const prevSelect = lastGPState['system:select'] || false;
+  const prevStart = lastGPState['system:start'] || false;
+
+  if(selectPressed && !prevSelect){
+    toggleLayout();
   }
+  if(startPressed && !prevStart){
+    restartGame();
+  }
+
+  lastGPState['system:select'] = selectPressed;
+  lastGPState['system:start'] = startPressed;
+
+  if(startPressed) return;
 
   for(let i=0;i<gp.buttons.length;i++){
     const logical = currentLayout.gamepadMap[i];
@@ -219,12 +313,19 @@ window.addEventListener('keydown', e => {
 
 function handleInput(logical){
   if(!running) return;
+
   if(seqType==='mash'){
     const current = sequence[0];
     if(logical === current.logical){
+      playSfx('press');
       current.progress++;
       score += 1 + Math.floor(level/4);
-      if(current.progress >= current.required){ level++; score += 50*level; generateSequence(); }
+      if(current.progress >= current.required){
+        playSfx('success');
+        level++;
+        score += 50*level;
+        generateSequence();
+      }
     } else {
       timer -= 120;
     }
@@ -233,12 +334,19 @@ function handleInput(logical){
 
   const expected = sequence[inputPos];
   if(!expected) return;
+
+  playSfx('press');
   if(logical === expected.logical){
     inputPos++;
     score += 5 + Math.floor(level/3);
-    if(inputPos >= sequence.length){ level++; score += 40*level; generateSequence(); }
+    if(inputPos >= sequence.length){
+      playSfx('success');
+      level++;
+      score += 40*level;
+      generateSequence();
+    }
   } else {
-    running = false;
+    failGame();
   }
 }
 
@@ -264,6 +372,18 @@ function strokeRoundedRect(x,y,w,h,r){
   ctx.stroke();
 }
 
+function safeRoundRectPath(x,y,w,h,r){
+  if(typeof ctx.roundRect === 'function'){
+    ctx.roundRect(x,y,w,h,r);
+  } else {
+    ctx.moveTo(x+r,y);
+    ctx.arcTo(x+w,y,x+w,y+h,r);
+    ctx.arcTo(x+w,y+h,x,y+h,r);
+    ctx.arcTo(x,y+h,x,y,r);
+    ctx.arcTo(x,y,x+w,y,r);
+  }
+}
+
 function drawButton(x,y,logical,opts={filled:false,small:false}){
   const b = getButtonVisual(logical);
   const size = opts.small?28:44;
@@ -276,7 +396,7 @@ function drawButton(x,y,logical,opts={filled:false,small:false}){
 
   if(b.kind==='shoulder'){
     if(currentLayoutKey === 'xbox360'){
-      // Sonic Unleashed / Xbox 360 style: white rounded pill with grey bevel
+      // Sonic Unleashed / Xbox 360 style: white rounded pill with grey bevel.
       const pillW = 72;
       const pillH = 34;
       const px = -pillW/2;
@@ -302,7 +422,7 @@ function drawButton(x,y,logical,opts={filled:false,small:false}){
       ctx.strokeText(b.label,0,1);
       ctx.fillText(b.label,0,1);
     } else {
-      // PS3 shoulder button: black base, white label
+      // PS3 shoulder button: black base, white label.
       ctx.fillStyle = '#000000';
       ctx.strokeStyle = '#111111';
       ctx.lineWidth = 2;
@@ -319,7 +439,7 @@ function drawButton(x,y,logical,opts={filled:false,small:false}){
     const radius = visualSize / 2;
 
     if(currentLayoutKey === 'xbox360'){
-      // Sonic Unleashed / Xbox 360 style: glossy colored button with dark rim
+      // Sonic Unleashed / Xbox 360 style: glossy colored button with dark rim.
       ctx.beginPath();
       ctx.arc(0,0,radius,0,Math.PI*2);
       ctx.closePath();
@@ -344,7 +464,7 @@ function drawButton(x,y,logical,opts={filled:false,small:false}){
       ctx.fillStyle = 'rgba(255,255,255,0.22)';
       ctx.fill();
     } else {
-      // PS3 style: black circular shell with colored symbol only
+      // PS3 style: black circular shell with colored symbol only.
       const shellGrad = ctx.createRadialGradient(-6,-7,2,0,0,radius);
       shellGrad.addColorStop(0,'#4a4a4a');
       shellGrad.addColorStop(0.38,'#1c1c1c');
@@ -397,6 +517,7 @@ function draw(){
   ctx.fillText('Score: ' + score, 18, 28);
   ctx.fillText('Level: ' + level, 18, 52);
   ctx.fillText('Layout: ' + currentLayout.name, 18, 76);
+  ctx.fillText('Record: ' + record.score + ' / Lv ' + record.level, 18, 100);
 
   const seqY = H*0.46;
   const spacing = 70;
@@ -412,7 +533,7 @@ function draw(){
     if(s.type==='mash'){
       drawButton(x, seqY, s.logical, {filled:false});
       const w = 160;
-      const h=12;
+      const h = 12;
       const gx = W/2 - w/2;
       const gy = seqY + 60;
       ctx.fillStyle='#333';
@@ -431,15 +552,15 @@ function draw(){
   }
 
   if(sequence.length === 1){
-    // Single-button QTE: circular timer around the button instead of horizontal bar
-    const s = sequence[0];
+    // Single-button QTE: circular timer around the button.
     const ratio = Math.max(0, timer / timeLimit);
+    // Visual-only acceleration illusion: actual duration still follows 3s / 5s / 10s rules.
+    const visualRatio = Math.pow(ratio, 1.75);
     const ringX = W / 2;
     const ringY = seqY;
-    // Ring hugs the button edge instead of floating far outside it.
     const ringRadius = 29;
     const startAngle = -Math.PI / 2;
-    const endAngle = startAngle + Math.PI * 2 * ratio;
+    const endAngle = startAngle + Math.PI * 2 * visualRatio;
 
     ctx.beginPath();
     ctx.arc(ringX, ringY, ringRadius, 0, Math.PI * 2);
@@ -447,17 +568,16 @@ function draw(){
     ctx.lineWidth = 6;
     ctx.stroke();
 
-    // Single-button timer color: yellow/gold at full time, true red at the end.
-    // A linear canvas gradient around a circle looks wrong, so interpolate by time instead.
+    // Time-color interpolation: gold at full time, true red near failure.
     const redR = 220;
     const redG = 0;
     const redB = 0;
     const yellowR = 255;
     const yellowG = 215;
     const yellowB = 0;
-    const colorR = Math.round(redR + (yellowR - redR) * ratio);
-    const colorG = Math.round(redG + (yellowG - redG) * ratio);
-    const colorB = Math.round(redB + (yellowB - redB) * ratio);
+    const colorR = Math.round(redR + (yellowR - redR) * visualRatio);
+    const colorG = Math.round(redG + (yellowG - redG) * visualRatio);
+    const colorB = Math.round(redB + (yellowB - redB) * visualRatio);
 
     ctx.beginPath();
     ctx.arc(ringX, ringY, ringRadius, startAngle, endAngle);
@@ -476,15 +596,17 @@ function draw(){
     ctx.fillStyle = '#1a2b3b';
     drawRoundedRect(bx,by,barW,barH,barH/2);
     const ratio = Math.max(0, timer / timeLimit);
+    // Visual-only acceleration illusion: actual duration still follows 3s / 5s / 10s rules.
+    const visualRatio = Math.pow(ratio, 1.75);
     const grd = ctx.createLinearGradient(bx,0,bx+barW,0);
     grd.addColorStop(0,'rgb(255,215,0)');
     grd.addColorStop(1,'rgb(220,0,0)');
     ctx.save();
     ctx.beginPath();
-    ctx.roundRect(bx, by, barW, barH, barH/2);
+    safeRoundRectPath(bx, by, barW, barH, barH/2);
     ctx.clip();
     ctx.fillStyle = grd;
-    ctx.fillRect(bx + barW * (1 - ratio), by, barW * ratio, barH);
+    ctx.fillRect(bx + barW * (1 - visualRatio), by, barW * visualRatio, barH);
     ctx.restore();
     ctx.strokeStyle = '#000';
     ctx.lineWidth = 2;
@@ -507,6 +629,7 @@ function draw(){
     ctx.fillText('GAME OVER', W/2, H/2 - 10);
     ctx.font='16px Arial';
     ctx.fillText('Press Restart to try again', W/2, H/2 + 24);
+    ctx.fillText('Best Record: ' + record.score + ' / Lv ' + record.level + ' (' + formatRecordDate(record.date) + ')', W/2, H/2 + 50);
   }
 }
 
@@ -516,7 +639,9 @@ function loop(now){
   last = now;
   if(running){
     timer -= dt;
-    if(timer <= 0){ running = false; }
+    if(timer <= 0){
+      failGame();
+    }
   }
   pollGamepad();
   draw();
@@ -531,16 +656,26 @@ function restartGame(){
   generateSequence();
 }
 
+function toggleLayout(){
+  currentLayoutKey = currentLayoutKey === 'xbox360' ? 'ps3' : 'xbox360';
+  currentLayout = LAYOUTS[currentLayoutKey];
+  document.getElementById('layoutSelect').value = currentLayoutKey;
+  lastGPState = {};
+  saveLayoutPreference();
+}
+
 document.getElementById('restart').addEventListener('click', restartGame);
 document.getElementById('layoutSelect').addEventListener('change', e=>{
   currentLayoutKey = e.target.value;
   currentLayout = LAYOUTS[currentLayoutKey];
   lastGPState = {};
+  saveLayoutPreference();
   // Preserve gameplay sequence logically; only visuals/input labels change.
 });
 
 window.addEventListener('resize', ()=>{ setupCanvas(); draw(); });
 
+document.getElementById('layoutSelect').value = currentLayoutKey;
 generateSequence();
 requestAnimationFrame(loop);
 
@@ -551,6 +686,13 @@ requestAnimationFrame(loop);
   console.assert(LAYOUTS.xbox360.buttons.FACE_BOTTOM.label==='A','Xbox bottom face label');
   console.assert(LAYOUTS.xbox360.buttons.SHOULDER_RIGHT.label==='RB','Xbox right shoulder label');
   console.assert(LAYOUTS.ps3.gamepadMap[0]==='FACE_BOTTOM','Gamepad index 0 maps to logical bottom');
+  console.assert(MASH_TIERS.length===3,'Mash tiers count');
+  console.assert(MASH_TIERS[0].required===3 && MASH_TIERS[0].time===3000,'Mash tier 3 presses / 3s');
+  console.assert(MASH_TIERS[1].required===5 && MASH_TIERS[1].time===5000,'Mash tier 5 presses / 5s');
+  console.assert(MASH_TIERS[2].required===60 && MASH_TIERS[2].time===10000,'Mash tier 60 presses / 10s');
+  console.assert(['xbox360','ps3'].includes(record.layout),'Saved layout is valid');
+  console.assert(PROMPT_BUTTONS_SINGLE.every(b=>!b.startsWith('SHOULDER')),'Single prompts exclude shoulders');
+  console.assert(PROMPT_BUTTONS_MULTI.includes('SHOULDER_LEFT') && PROMPT_BUTTONS_MULTI.includes('SHOULDER_RIGHT'),'Multi prompts include shoulders');
 })();
 </script>
 </body>
