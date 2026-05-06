@@ -154,27 +154,32 @@ function generateSequence(){
     if(isMash){
       seqType = 'mash';
       // Scales from 5 to 60 presses. At 60 presses, the player gets 8 seconds.
-      // Mash events: minimum 5 presses, maximum 60 presses.
-      // At 60 presses the player receives exactly 8 seconds.
-      const required = Math.min(Math.max(5 + Math.floor(level * 3.2), 5), 60);
-      const t = (required - 5) / 55;
-      timeLimit = Math.round(1400 + t * 6600);
-      if(required >= 60){
-        timeLimit = 8000;
-      }
+      // Mash events use only three fixed tiers:
+      // 3 presses = 3s, 5 presses = 5s, 60 presses = 8s.
+      const mashTiers = [
+        {required:3, time:3000},
+        {required:5, time:5000},
+        {required:60, time:8000}
+      ];
+      let tierIndex = 0;
+      if(level >= 12) tierIndex = 2;
+      else if(level >= 4) tierIndex = 1;
+      const tier = mashTiers[tierIndex];
+      const required = tier.required;
+      timeLimit = tier.time;
       sequence = [{type:'mash', logical:btn, required:required, progress:0}];
     } else {
       seqType = 'normal';
       sequence = [{type:'press', logical:btn}];
-      timeLimit = Math.max(500, 1300 - level * 35);
+      timeLimit = 3000;
     }
   } else {
     // Multi-button QTEs: 3 to 5 buttons, face + shoulder buttons allowed.
     seqType = 'normal';
-    const len = Math.min(3 + Math.floor(level / 3), 5);
+    const len = 3 + rand(3);
     sequence = [];
     for(let i=0;i<len;i++) sequence.push({type:'press',logical:pickButton('multi')});
-    timeLimit = Math.max(700, 2100 - level*120);
+    timeLimit = len === 3 ? 3000 : 5000;
   }
 
   inputPos = 0;
@@ -188,6 +193,14 @@ function pollGamepad(){
   if(gamepadIndex===null) return;
   const gp = navigator.getGamepads()[gamepadIndex];
   if(!gp) return;
+
+  // Start / Select reset the game immediately.
+  // Standard mapping: 8 = Select/Back, 9 = Start.
+  if((gp.buttons[8] && gp.buttons[8].pressed) || (gp.buttons[9] && gp.buttons[9].pressed)){
+    restartGame();
+    return;
+  }
+
   for(let i=0;i<gp.buttons.length;i++){
     const logical = currentLayout.gamepadMap[i];
     if(!logical) continue;
@@ -254,6 +267,10 @@ function strokeRoundedRect(x,y,w,h,r){
 function drawButton(x,y,logical,opts={filled:false,small:false}){
   const b = getButtonVisual(logical);
   const size = opts.small?28:44;
+  // PS3 symbols looked visually larger because of their black shell + font scaling.
+  // Keep Xbox unchanged; slightly reduce the PS3 face-button shell to match Xbox perceived size.
+  const visualSize = currentLayoutKey === 'ps3' && b.kind === 'face' ? size * 0.92 : size;
+
   ctx.save();
   ctx.translate(x,y);
 
@@ -299,10 +316,10 @@ function drawButton(x,y,logical,opts={filled:false,small:false}){
   } else {
     const fillColor = b.fillColor || '#000000';
     const symbolColor = b.symbolColor || b.color;
+    const radius = visualSize / 2;
 
     if(currentLayoutKey === 'xbox360'){
       // Sonic Unleashed / Xbox 360 style: glossy colored button with dark rim
-      const radius = size/2;
       ctx.beginPath();
       ctx.arc(0,0,radius,0,Math.PI*2);
       ctx.closePath();
@@ -327,12 +344,11 @@ function drawButton(x,y,logical,opts={filled:false,small:false}){
       ctx.fillStyle = 'rgba(255,255,255,0.22)';
       ctx.fill();
     } else {
-      // PS3 Sonic Unleashed style: black button shell with colored symbol
-      const radius = size/2;
+      // PS3 style: black circular shell with colored symbol only
       const shellGrad = ctx.createRadialGradient(-6,-7,2,0,0,radius);
       shellGrad.addColorStop(0,'#4a4a4a');
-      shellGrad.addColorStop(0.38,'#111111');
-      shellGrad.addColorStop(1,'#000000');
+      shellGrad.addColorStop(0.38,'#1c1c1c');
+      shellGrad.addColorStop(1,'#101010');
 
       ctx.beginPath();
       ctx.arc(0,0,radius,0,Math.PI*2);
@@ -364,6 +380,7 @@ function drawButton(x,y,logical,opts={filled:false,small:false}){
     ctx.fillText(b.label, offsetX / scale, offsetY / scale);
     ctx.restore();
   }
+
   ctx.restore();
 }
 
@@ -450,7 +467,9 @@ function draw(){
     ctx.stroke();
     ctx.lineCap = 'butt';
   } else {
-    const barW = Math.min(W*0.8, 720);
+    // Multi-button timer bar: length roughly matches the prompted button sequence width.
+    const buttonSpan = Math.max(120, (sequence.length - 1) * spacing + 44);
+    const barW = Math.min(buttonSpan + 36, W * 0.8);
     const barH = 18;
     const bx = (W - barW)/2;
     const by = H*0.6;
